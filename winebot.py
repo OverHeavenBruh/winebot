@@ -34,6 +34,23 @@ wine_data = {}
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Привет! Используй /add для добавления вина.")
 
+async def list_wines(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cur.execute("SELECT name, sealed_lobby, sealed_letnik, open_lobby, open_letnik FROM wines ORDER BY name")
+    rows = cur.fetchall()
+
+    if not rows:
+        await update.message.reply_text("Склад пуст.")
+        return
+
+    msg = ""
+    for row in rows:
+        msg += (
+            f"{row[0]}:\n"
+            f"  Запечатано — Лобби: {row[1] or 0}, Летник: {row[2] or 0}\n"
+            f"  Вскрыто — Лобби: {row[3] or 0}, Летник: {row[4] or 0}\n\n"
+        )
+    await update.message.reply_text(msg)
+
 async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Пример: /add Мерло")
@@ -85,7 +102,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 def parse_int(text):
-    return int(text) if text.isdigit() else None
+    return int(text) if text.isdigit() else 0
 
 if __name__ == "__main__":
     token = os.environ["BOT_TOKEN"]
@@ -104,6 +121,7 @@ if __name__ == "__main__":
     )
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("list", list_wines))
     app.add_handler(conv_handler)
 
     logging.info("Bot started...")
