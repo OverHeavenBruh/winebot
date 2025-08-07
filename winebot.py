@@ -1,11 +1,13 @@
 import os
 import logging
 import psycopg2
+import tempfile
 from telegram import Update, InputFile
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 
 logging.basicConfig(level=logging.INFO)
 
+# Подключение к PostgreSQL
 conn = psycopg2.connect(
     host=os.environ["PGHOST"],
     database=os.environ["PGDATABASE"],
@@ -15,6 +17,7 @@ conn = psycopg2.connect(
 )
 cur = conn.cursor()
 
+# Таблица вин
 cur.execute('''
     CREATE TABLE IF NOT EXISTS wines (
         id SERIAL PRIMARY KEY,
@@ -28,29 +31,49 @@ cur.execute('''
 ''')
 conn.commit()
 
+# Шаги диалога
 (ASK_SEALED_LOBBY, ASK_SEALED_LETNIK, ASK_OPEN_LOBBY, ASK_OPEN_LETNIK, ASK_PHOTO) = range(5)
 wine_data = {}
 
+# Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Привет! Используй /add для добавления вина.")
 
+# Команда /list
 async def list_wines(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cur.execute("SELECT name, sealed_lobby, sealed_letnik, open_lobby, open_letnik FROM wines ORDER BY name")
+    cur.execute("SELECT name, sealed_lobby, sealed_letnik, open_lobby, open_letnik, photo FROM wines ORDER BY name")
     rows = cur.fetchall()
 
     if not rows:
         await update.message.reply_text("Склад пуст.")
         return
 
-    msg = ""
     for row in rows:
-        msg += (
-            f"{row[0]}:\n"
-            f"  Запечатано — Лобби: {row[1] or 0}, Летник: {row[2] or 0}\n"
-            f"  Вскрыто — Лобби: {row[3] or 0}, Летник: {row[4] or 0}\n\n"
-        )
-    await update.message.reply_text(msg)
+        name, sl, st, ol, ot, photo = row
+        sl = sl if sl else 0
+        st = st if st else 0
+        ol = ol if ol else 0
+        ot = ot if ot else 0
 
+        lobby_info = f"Открыто: {ol} Закрыто: {sl}" if ol or sl else "Отсутствует"
+        letnik_info = f"Открыто: {ot} Закрыто: {st}" if ot or st else "Отсутствует"
+
+        if lobby_info == "Отсутствует" and letnik_info == "Отсутствует":
+            msg = f"{name}:\nВино полностью отсутствует."
+        else:
+            msg = f"{name}:\nLobby:\n{lobby_info}\nЛетник:\n{letnik_info}"
+
+        await update.message.reply_text(msg)
+
+        # Отправка фото, если есть
+        if photo:
+            with tempfile.NamedTemporaryFile(delete=False) as tmp:
+                tmp.write(photo)
+                tmp_path = tmp.name
+            with open(tmp_path, 'rb') as f:
+                await update.message.reply_photo(photo=InputFile(f))
+
+# Команда /add
 async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Пример: /add Мерло")
@@ -86,6 +109,7 @@ async def ask_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.photo:
         photo_file = await update.message.photo[-1].get_file()
         photo_data = await photo_file.download_as_bytearray()
+
     wine = wine_data.get(user_id, {})
     cur.execute('''INSERT INTO wines (name, sealed_lobby, sealed_letnik, open_lobby, open_letnik, photo)
                    VALUES (%s, %s, %s, %s, %s, %s)''',
@@ -96,14 +120,17 @@ async def ask_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     wine_data.pop(user_id, None)
     return ConversationHandler.END
 
+# Отмена
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     wine_data.pop(update.effective_user.id, None)
     await update.message.reply_text("Добавление отменено.")
     return ConversationHandler.END
 
+# Парсер чисел
 def parse_int(text):
     return int(text) if text.isdigit() else 0
 
+# Запуск бота
 if __name__ == "__main__":
     token = os.environ["BOT_TOKEN"]
     app = ApplicationBuilder().token(token).build()
