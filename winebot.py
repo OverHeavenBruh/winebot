@@ -1,56 +1,80 @@
-import sqlite3
+import os
+import logging
+import psycopg2
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# Инициализация базы данных
-conn = sqlite3.connect("wines.db", check_same_thread=False)
-cursor = conn.cursor()
-cursor.execute("""
+# Включаем логирование
+logging.basicConfig(level=logging.INFO)
+
+# Подключение к PostgreSQL
+conn = psycopg2.connect(
+    host=os.environ["PGHOST"],
+    database=os.environ["PGDATABASE"],
+    user=os.environ["PGUSER"],
+    password=os.environ["PGPASSWORD"],
+    port=os.environ.get("PGPORT", 5432)
+)
+cur = conn.cursor()
+
+# Создаём таблицу, если нет
+cur.execute('''
     CREATE TABLE IF NOT EXISTS wines (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT UNIQUE,
-        quantity INTEGER
-    )
-""")
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        quantity INTEGER NOT NULL
+    );
+''')
 conn.commit()
+
 
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привет! Я бот склада. Используй /add и /list.")
+    await update.message.reply_text("Привет! Я бот склада вина. Используй /add и /list.")
 
-# Команда /add название количество (например: /add Мерло 3)
-async def add_wine(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) >= 1:
+
+# Команда /add Название Кол-во
+async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
         name = context.args[0]
-        quantity = int(context.args[1]) if len(context.args) > 1 and context.args[1].isdigit() else 1
+        quantity = int(context.args[1])
+    except (IndexError, ValueError):
+        await update.message.reply_text("Пример: /add Мерло 5")
+        return
 
-        cursor.execute("SELECT quantity FROM wines WHERE name = ?", (name,))
-        result = cursor.fetchone()
-        if result:
-            new_quantity = result[0] + quantity
-            cursor.execute("UPDATE wines SET quantity = ? WHERE name = ?", (new_quantity, name))
-        else:
-            cursor.execute("INSERT INTO wines (name, quantity) VALUES (?, ?)", (name, quantity))
-        conn.commit()
-        await update.message.reply_text(f"✅ Добавлено: {name} (+{quantity})")
+    cur.execute("SELECT quantity FROM wines WHERE name = %s", (name,))
+    result = cur.fetchone()
+
+    if result:
+        cur.execute("UPDATE wines SET quantity = quantity + %s WHERE name = %s", (quantity, name))
     else:
-        await update.message.reply_text("Используй так: /add Название [Количество]")
+        cur.execute("INSERT INTO wines (name, quantity) VALUES (%s, %s)", (name, quantity))
+
+    conn.commit()
+    await update.message.reply_text(f"Добавлено: {name} — {quantity} шт.")
+
 
 # Команда /list
 async def list_wines(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cursor.execute("SELECT name, quantity FROM wines")
-    rows = cursor.fetchall()
-    if rows:
-        text = "\n".join(f"- {name}: {qty} шт." for name, qty in rows)
-        await update.message.reply_text(f"📦 Вина на складе:\n{text}")
-    else:
+    cur.execute("SELECT name, quantity FROM wines ORDER BY name")
+    rows = cur.fetchall()
+
+    if not rows:
         await update.message.reply_text("Склад пуст.")
+        return
 
-# Основной запуск
-app = ApplicationBuilder().token("ТВОЙ_ТОКЕН").build()
+    msg = "\n".join([f"{name}: {qty} шт." for name, qty in rows])
+    await update.message.reply_text(msg)
 
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("add", add_wine))
-app.add_handler(CommandHandler("list", list_wines))
 
-app.run_polling()
+# Запуск бота
+if __name__ == "__main__":
+    token = os.environ["BOT_TOKEN"]
+    app = ApplicationBuilder().token(token).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("add", add))
+    app.add_handler(CommandHandler("list", list_wines))
+
+    logging.info("Bot started...")
+    app.run_polling()
