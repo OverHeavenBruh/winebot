@@ -39,6 +39,9 @@ wine_data = {}
 (ASK_UPDATE_SELECT, ASK_UPDATE_SEALED_LOBBY, ASK_UPDATE_SEALED_LETNIK, ASK_UPDATE_OPEN_LOBBY, ASK_UPDATE_OPEN_LETNIK, ASK_UPDATE_PHOTO) = range(10, 16)
 update_state = {}
 
+ASK_REMOVE_CONFIRM = 16
+remove_state = {}
+
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Привет! Используй /add для добавления вина.")
@@ -214,6 +217,38 @@ async def ask_update_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     update_state.pop(user_id, None)
     return ConversationHandler.END
 
+# Удалить
+async def remove_wine(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Пример: /remove мерло")
+        return ConversationHandler.END
+
+    name_input = " ".join(context.args)
+    found = find_closest_wine(name_input)
+
+    if not found:
+        await update.message.reply_text("Вино не найдено.")
+        return ConversationHandler.END
+
+    remove_state[update.effective_user.id] = found
+    await update.message.reply_text(f"Найдено: {found}. Удалить? (Да / Нет / Скип)")
+    return ASK_REMOVE_CONFIRM
+
+async def confirm_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    response = update.message.text.strip().lower()
+    user_id = update.effective_user.id
+    wine_name = remove_state.get(user_id)
+
+    if response == "да":
+        cur.execute("DELETE FROM wines WHERE name = %s", (wine_name,))
+        conn.commit()
+        await update.message.reply_text(f"Вино '{wine_name}' удалено.")
+    else:
+        await update.message.reply_text("Удаление отменено.")
+
+    remove_state.pop(user_id, None)
+    return ConversationHandler.END
+
 
 # Отмена
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -242,6 +277,15 @@ if __name__ == "__main__":
         fallbacks=[CommandHandler("cancel", cancel)]
     )
 
+    remove_conv = ConversationHandler(
+    entry_points=[CommandHandler("remove", remove_wine)],
+    states={
+        ASK_REMOVE_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_remove)],
+    },
+    fallbacks=[CommandHandler("cancel", cancel)]
+)
+
+
     update_conv = ConversationHandler(
     entry_points=[CommandHandler("update", update_wine)],
     states={
@@ -254,7 +298,7 @@ if __name__ == "__main__":
     fallbacks=[CommandHandler("cancel", cancel)]
     )
 
-
+    app.add_handler(remove_conv)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("list", list_wines))
     app.add_handler(conv_handler)
